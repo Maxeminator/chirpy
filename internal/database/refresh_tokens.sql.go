@@ -7,15 +7,24 @@ package database
 
 import (
 	"context"
+	"time"
+
+	"github.com/google/uuid"
 )
 
 const createRefreshToken = `-- name: CreateRefreshToken :exec
-INSERT INTO refresh_tokens (token, user_id, expires_at)
-VALUES ($1, NOW(), NOW())
+INSERT INTO refresh_tokens (token, user_id, created_at, updated_at, expires_at)
+VALUES ($1, $2, NOW(), NOW(), $3)
 `
 
-func (q *Queries) CreateRefreshToken(ctx context.Context, token string) error {
-	_, err := q.db.ExecContext(ctx, createRefreshToken, token)
+type CreateRefreshTokenParams struct {
+	Token     string
+	UserID    uuid.UUID
+	ExpiresAt time.Time
+}
+
+func (q *Queries) CreateRefreshToken(ctx context.Context, arg CreateRefreshTokenParams) error {
+	_, err := q.db.ExecContext(ctx, createRefreshToken, arg.Token, arg.UserID, arg.ExpiresAt)
 	return err
 }
 
@@ -39,23 +48,32 @@ func (q *Queries) GetRefreshToken(ctx context.Context, token string) (RefreshTok
 }
 
 const getUserFromRefreshToken = `-- name: GetUserFromRefreshToken :one
-SELECT users.id, users.created_at, users.updated_at, users.email, users.hashed_password
+SELECT users.id, users.created_at, users.updated_at, users.email, users.hashed_password, refresh_tokens.expires_at
 FROM refresh_tokens
 JOIN users ON users.id = refresh_tokens.user_id
-WHERE refresh_tokens.token=$1
-AND refresh_tokens.expires_at > NOW()
-AND refresh_tokens.revoked_at IS NULL
+WHERE refresh_tokens.token = $1
+  AND refresh_tokens.revoked_at IS NULL
 `
 
-func (q *Queries) GetUserFromRefreshToken(ctx context.Context, token string) (User, error) {
+type GetUserFromRefreshTokenRow struct {
+	ID             uuid.UUID
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	Email          string
+	HashedPassword string
+	ExpiresAt      time.Time
+}
+
+func (q *Queries) GetUserFromRefreshToken(ctx context.Context, token string) (GetUserFromRefreshTokenRow, error) {
 	row := q.db.QueryRowContext(ctx, getUserFromRefreshToken, token)
-	var i User
+	var i GetUserFromRefreshTokenRow
 	err := row.Scan(
 		&i.ID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Email,
 		&i.HashedPassword,
+		&i.ExpiresAt,
 	)
 	return i, err
 }
