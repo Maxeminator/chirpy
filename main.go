@@ -23,16 +23,8 @@ type apiConfig struct {
 	env            string
 }
 
-type chirpRequest struct {
-	Body string `json:"body"`
-}
-
 type chirpErrorResponse struct {
 	Error string `json:"error"`
-}
-
-type chirpCleanedResponse struct {
-	CleanedBody string `json:"cleaned_body"`
 }
 
 type createUserRequest struct {
