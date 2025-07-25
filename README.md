@@ -138,3 +138,8 @@ Authorization: ApiKey f271c81ff7084ee5b99a5091b42d486e
 ├── .env
 └── README.md
 ```
+## ✅ Тесты
+
+```
+go test ./...
+```
