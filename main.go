@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -32,6 +33,11 @@ type createUserRequest struct {
 	Email            string `json:"email"`
 	Password         string `json:"password"`
 	ExpiresInSeconds int    `json:"expires_in_seconds"`
+}
+
+type updateUserRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
 }
 
 type userResponse struct {
@@ -103,6 +109,8 @@ func main() {
 	mux.HandleFunc("POST /api/login", apiCfg.loginHandler)
 	mux.HandleFunc("POST /api/refresh", apiCfg.refreshHandler)
 	mux.HandleFunc("POST /api/revoke", apiCfg.revokeHandler)
+	mux.HandleFunc("PUT /api/users", apiCfg.updateUserHandler)
+	mux.HandleFunc("DELETE /api/chirps/{chirpID}", apiCfg.deleteChirpByIDHandler)
 
 	server := &http.Server{
 		Addr:    ":8080",
@@ -227,6 +235,49 @@ func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) 
 	}
 
 	respondWithJSON(w, http.StatusCreated, resp)
+}
+
+func (cfg *apiConfig) updateUserHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Missing or invalid authorization header")
+	}
+
+	userID, err := auth.ValidateJWT(token, cfg.jwtSecret)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Invalid token")
+		return
+	}
+
+	var req updateUserRequest
+	err = json.NewDecoder(r.Body).Decode(&req)
+	if err != nil || req.Email == "" || req.Password == "" {
+		respondWithError(w, http.StatusBadRequest, "Invalid request body")
+	}
+
+	newPassword, err := auth.HashPassword(req.Password)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to hash password")
+		return
+	}
+
+	err = cfg.DB.UpdateUser(r.Context(), database.UpdateUserParams{
+		ID:             userID,
+		Email:          req.Email,
+		HashedPassword: newPassword,
+	})
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Failed to update login or password")
+		return
+	}
+	respondWithJSON(w, http.StatusOK, map[string]string{
+		"email": req.Email,
+	})
 }
 
 func (cfg *apiConfig) createChirpHandler(w http.ResponseWriter, r *http.Request) {
@@ -400,7 +451,7 @@ func (cfg *apiConfig) refreshHandler(w http.ResponseWriter, r *http.Request) {
 
 	token, err := auth.GetBearerToken(r.Header)
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Missing or invalid authorization header")
+		respondWithError(w, http.StatusUnauthorized, "Missing or invalid authorization header")
 		return
 	}
 
@@ -438,6 +489,50 @@ func (cfg *apiConfig) revokeHandler(w http.ResponseWriter, r *http.Request) {
 	err = cfg.DB.RevokeRefreshToken(r.Context(), token)
 	if err != nil {
 		respondWithError(w, http.StatusUnauthorized, "Invalid or revoked refresh token")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (cfg *apiConfig) deleteChirpByIDHandler(w http.ResponseWriter, r *http.Request) {
+	chirpIDStr := r.PathValue("chirpID")
+	chirpID, err := uuid.Parse(chirpIDStr)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid chirp ID")
+		return
+	}
+
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Missing or invalid authorization header")
+		return
+	}
+
+	userID, err := auth.ValidateJWT(token, cfg.jwtSecret)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Failed to log in")
+		return
+	}
+
+	chirp, err := cfg.DB.GetChirpByID(r.Context(), chirpID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			respondWithError(w, http.StatusNotFound, "Chirp not found")
+			return
+		}
+		respondWithError(w, http.StatusInternalServerError, "Database error")
+		return
+	}
+
+	if chirp.UserID != userID {
+		respondWithError(w, http.StatusForbidden, "You are not author of this chirp")
+		return
+	}
+
+	err = cfg.DB.DeleteChirpByID(r.Context(), chirp.ID)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to delete chirp")
 		return
 	}
 
